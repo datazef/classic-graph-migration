@@ -10,11 +10,9 @@ Gremlin format schema is the groovy script to create core graph schema under gre
 
 Run the following command to output the core graph schema generation script when the DSE server is up:
 ```
-dse graph-migrate-schema [-cql | -gremlin] <classic_graph> <core_graph>
+dse graph-migrate-schema <classic_graph> <core_graph>
 ```
 
-- `-cql`: specifies the output as cql format.
-- `-gremlin`: specifies the output as gremlin format.
 - `<classic_graph>`: the name of the existing classic graph you would like to migrate from.
 - `<core_graph>`: the name of the new core graph you would like to create.
 
@@ -28,7 +26,7 @@ If custom handling of meta and multi properties is needed, users should modify t
 
 To save the generated output as a script into a file, you may run the following:
 ```
-dse graph-migrate-schema -gremlin reviewerRating nreviewerRating > core_schema.groovy
+dse graph-migrate-schema reviewerRating nreviewerRating > core_schema.groovy
 ```
 
 To create the core graph schema, pass the generated script to gremlin-console or cqlsh depending on the type of format.
@@ -51,12 +49,12 @@ sbt package
 
 and then submit to Spark:
 ```
-dse spark-submit target/scala-2.11/graph-migration_2.11-0.1.jar <classic_graph> <core_graph>
+dse spark-submit --conf <PARAMS> target/scala-2.11/graph-migration_2.11-0.1.jar 
 ```
 
 Example:
 ```
-dse spark-submit target/scala-2.11/graph-migration_2.11-0.1.jar reviewerRating nreviewerRating
+dse spark-submit --conf spark.dse.cluster.migration.fromHost=localhost --conf spark.dse.cluster.migration.fromGraph=northwind --conf spark.dse.cluster.migration.toHost=localhost --conf spark.dse.cluster.migration.toGraph=graph_core /Users/sebastien.bastard/WORK/PROJECTS/classic-graph-migration/target/scala-2.11/graph-migration_2.11-0.1.jar
 ```
 
 ### Development notes

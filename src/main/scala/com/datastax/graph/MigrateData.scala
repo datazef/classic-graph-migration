@@ -6,6 +6,8 @@
 
 package com.datastax.graph
 
+import java.util.MissingFormatArgumentException
+
 import com.datastax.bdp.graph.spark.graphframe._
 import com.datastax.bdp.graph.spark.graphframe.dsedb.CoreDseGraphFrame
 import com.datastax.bdp.graph.spark.graphframe.classic.ClassicDseGraphFrame
@@ -101,9 +103,12 @@ object MigrateData {
     System.out.println(s"Graph contains ${vertexLabels.size} vertices")
 
     for (vertexLabel: GraphKeyspace.VertexLabel <- vertexLabels) {
+      System.out.println(s"  -> Processing vertex with name ${vertexLabel.name()}")
+
       //prepare core vertex columns for this label
       val propertyColumns = vertexLabel.propertyKeys().asScala.map((property: GraphKeyspace.PropertyKey) => {
         val name: String = getClassicPropertyName(property)
+
         val rawColumn: StructField = dfSchema(name)
         //  drop meta and multi properties. the method can be changed to return Seq[Column] if more then one column
         // is created base on one classic property
@@ -135,12 +140,19 @@ object MigrateData {
     */
 
   def migrateEdges(conf: MigrationConfig, classic: ClassicDseGraphFrame, core: CoreDseGraphFrame, spark: SparkSession): Unit = {
+    System.out.println("Starting edges migration")
+
     // it could be good to cache edges here
     val edges = classic.E.df
 
     val dfSchema = edges.schema
+
+    System.out.println(s"Graph contains ${core.graphKeyspace.edgeLabels().asScala.toSeq.size} edges")
+
     // enumerate all edge labels, actually triplets: out_vertex_label->edge_label->in_vertex_label
     for (edgeLabel <- core.graphKeyspace.edgeLabels().asScala.toSeq) {
+      System.out.println(s"  -> Processing edge with name ${edgeLabel.name()}")
+
       val outLabelName = edgeLabel.outLabel.name()
       val edgeLabelName = edgeLabel.name()
       val inLabelName = edgeLabel.inLabel.name()
@@ -169,12 +181,11 @@ object MigrateData {
   def migrate(conf: MigrationConfig, spark: SparkSession) = {
     System.out.println(s"Starting migration with configuration $conf")
 
-    spark.setCassandraConf("from", CassandraConnectorConf.ConnectionHostParam.option(conf.from.host))
-    spark.setCassandraConf("to", CassandraConnectorConf.ConnectionHostParam.option(conf.to.host))
+    spark.setCassandraConf("from", CassandraConnectorConf.ConnectionHostParam.option(conf.from.host) + ("spark.cassandra.auth.username" -> conf.from.login) + ("spark.cassandra.auth.password" ->  conf.from.password))
+    spark.setCassandraConf("to", CassandraConnectorConf.ConnectionHostParam.option(conf.to.host) + ("spark.cassandra.auth.username" -> conf.to.login) + ("spark.cassandra.auth.password" ->  conf.to.password))
 
     val classic = spark.dseGraph(conf.from.name, Map ("cluster" -> "from")).asInstanceOf[ClassicDseGraphFrame]
     val core = spark.dseGraph(conf.to.name, Map ("cluster" -> "to")).asInstanceOf[CoreDseGraphFrame]
-
 
     migrateVertices(conf, classic, core, spark)
     migrateEdges(conf, classic, core, spark)
@@ -183,29 +194,33 @@ object MigrateData {
   def main(args: Array[String]): Unit = {
     val spark = SparkSession
       .builder
-      .appName(s"Classic2Core migrator")
+      .appName(s"Classic To Core graph migrator")
       .getOrCreate()
 
     val conf = spark.sparkContext.getConf
 
     val from = ClusterConfig(conf.get("spark.dse.cluster.migration.fromGraph", null),
       conf.get("spark.dse.cluster.migration.fromHost", null),
-      Some(conf.get("spark.dse.cluster.migration.fromUser", null)),
-      Some(conf.get("spark.dse.cluster.migration.fromPassword", null))
+      conf.get("spark.dse.cluster.migration.fromUser", ""),
+      conf.get("spark.dse.cluster.migration.fromPassword", "")
     )
 
     val to = ClusterConfig( conf.get("spark.dse.cluster.migration.toGraph", null),
       conf.get("spark.dse.cluster.migration.toHost", null),
-      Some(conf.get("spark.dse.cluster.migration.toUser", null)),
-      Some(conf.get("spark.dse.cluster.migration.toPassword", null))
+      conf.get("spark.dse.cluster.migration.toUser", ""),
+      conf.get("spark.dse.cluster.migration.toPassword", "")
     )
 
     try {
+      if (from.host == null || from.host.isEmpty) throw new Exception("Parameter spark.dse.cluster.migration.fromHost is missing")
+      if (from.name == null || from.name.isEmpty) throw new Exception("Parameter spark.dse.cluster.migration.fromGraph is missing")
+      if (to.host == null || to.host.isEmpty) throw new Exception("Parameter spark.dse.cluster.migration.toHost is missing")
+      if (to.name == null || to.name.isEmpty) throw new Exception("Parameter spark.dse.cluster.migration.toGraph is missing")
+
       migrate(MigrationConfig(from,to), spark)
     } catch {
       case e: Exception =>
-        e.printStackTrace()
-        System.err.println("Failed to migrate the graph. Please review the logs.")
+        System.err.println(s"Failed to migrate the graph: ${e.getMessage}")
     } finally {
       System.out.println("Closing Spark session")
       spark.stop()
