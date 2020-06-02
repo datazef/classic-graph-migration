@@ -12,19 +12,16 @@ resolvers += Resolver.mavenLocal // for testing
 
 mainClass in (Compile, packageBin) := Some("com.datastax.graph.MigrateData")
 
-// Warning Sbt 0.13.13 or greater is required due to a bug with dependency resolution
-//libraryDependencies += "com.datastax.dse" % "dse-spark-dependencies" % dseVersion % "provided"
+libraryDependencies ++= Seq(
+  "com.datastax.dse" % "dse-spark-dependencies" % dseVersion % "provided"
+)
 
-// WORKAROUND for non published DSE. 
-// all folowing code should be removed after public release. dse-spark-dependencies artiact is enough
-// please set DSE_HOME env variable
-
-val DSE_HOME = file(sys.env.getOrElse("DSE_HOME", sys.env("HOME")+"/dse"))
+val DSE_HOME = file("/Users/sebastien.bastard/WORK/TOOLS/DSE/dse-6.8.0/")
 // find all jars in the DSE
 def allDseJars = {
-  val finder: PathFinder = (DSE_HOME) ** "*.jar" 
+  val finder: PathFinder = (DSE_HOME) ** "*.jar"
   finder.get
 }
 // add all jars to dependancies
 unmanagedJars in Compile ++= allDseJars
-unmanagedJars in Test ++= allDseJars 
+unmanagedJars in Test ++= allDseJars

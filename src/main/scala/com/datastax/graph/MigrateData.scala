@@ -12,12 +12,14 @@ import com.datastax.bdp.graph.spark.graphframe.classic.ClassicDseGraphFrame
 import com.datastax.bdp.graphv2.dsedb.schema.Column.{ColumnType => CoreColumnType, Type => CoreType}
 import com.datastax.bdp.graphv2.engine.GraphKeyspace
 import com.datastax.bdp.graphv2.engine.GraphKeyspace.VertexLabel
+import com.datastax.spark.connector.cql.CassandraConnectorConf
 import org.apache.spark.sql._
 import org.apache.spark.sql.cassandra._
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types.{ArrayType, StructField, StructType}
 
 import scala.collection.JavaConverters._
+import scala.util.{Failure, Success, Try}
 
 object MigrateData {
 
@@ -87,12 +89,17 @@ object MigrateData {
     * @param coreGraphName target graph
     * @param spark           current spark session
     */
-  def migrateVertices(classic: ClassicDseGraphFrame, core: CoreDseGraphFrame, spark: SparkSession): Unit = {
+  def migrateVertices(conf: MigrationConfig, classic: ClassicDseGraphFrame, core: CoreDseGraphFrame, spark: SparkSession): Unit = {
+    System.out.println("Starting vertices migration")
+
     val vertices = classic.V.df
 
     // vertex labels to enumerate
     val vertexLabels: Seq[GraphKeyspace.VertexLabel] = core.graphKeyspace.vertexLabels().asScala.toSeq
     val dfSchema = vertices.schema
+
+    System.out.println(s"Graph contains ${vertexLabels.size} vertices")
+
     for (vertexLabel: GraphKeyspace.VertexLabel <- vertexLabels) {
       //prepare core vertex columns for this label
       val propertyColumns = vertexLabel.propertyKeys().asScala.map((property: GraphKeyspace.PropertyKey) => {
@@ -127,7 +134,7 @@ object MigrateData {
     * @param spark           current spark session
     */
 
-  def migrateEdges(classic: ClassicDseGraphFrame, core: CoreDseGraphFrame, spark: SparkSession): Unit = {
+  def migrateEdges(conf: MigrationConfig, classic: ClassicDseGraphFrame, core: CoreDseGraphFrame, spark: SparkSession): Unit = {
     // it could be good to cache edges here
     val edges = classic.E.df
 
@@ -156,41 +163,52 @@ object MigrateData {
 
       // save edges in the core graph
       core.updateEdges(outLabelName, edgeLabelName, inLabelName, unpackDstTable)
-
     }
+  }
+
+  def migrate(conf: MigrationConfig, spark: SparkSession) = {
+    System.out.println(s"Starting migration with configuration $conf")
+
+    spark.setCassandraConf("from", CassandraConnectorConf.ConnectionHostParam.option(conf.from.host))
+    spark.setCassandraConf("to", CassandraConnectorConf.ConnectionHostParam.option(conf.to.host))
+
+    val classic = spark.dseGraph(conf.from.name, Map ("cluster" -> "from")).asInstanceOf[ClassicDseGraphFrame]
+    val core = spark.dseGraph(conf.to.name, Map ("cluster" -> "to")).asInstanceOf[CoreDseGraphFrame]
+
+
+    migrateVertices(conf, classic, core, spark)
+    migrateEdges(conf, classic, core, spark)
   }
 
   def main(args: Array[String]): Unit = {
-    if (args.length < 2) {
-      usage();
-      System.exit(-1);
-    }
-    val classicGraphName = args(0)
-    val coreGraphName = args(1)
-
     val spark = SparkSession
       .builder
-      .appName(s"Migrate data from $classicGraphName to $coreGraphName")
+      .appName(s"Classic2Core migrator")
       .getOrCreate()
 
+    val conf = spark.sparkContext.getConf
+
+    val from = ClusterConfig(conf.get("spark.dse.cluster.migration.fromGraph", null),
+      conf.get("spark.dse.cluster.migration.fromHost", null),
+      Some(conf.get("spark.dse.cluster.migration.fromUser", null)),
+      Some(conf.get("spark.dse.cluster.migration.fromPassword", null))
+    )
+
+    val to = ClusterConfig( conf.get("spark.dse.cluster.migration.toGraph", null),
+      conf.get("spark.dse.cluster.migration.toHost", null),
+      Some(conf.get("spark.dse.cluster.migration.toUser", null)),
+      Some(conf.get("spark.dse.cluster.migration.toPassword", null))
+    )
+
     try {
-      val classic = spark.dseGraph(classicGraphName).asInstanceOf[ClassicDseGraphFrame]
-      val core = spark.dseGraph(coreGraphName).asInstanceOf[CoreDseGraphFrame]
-
-      migrateVertices(classic, core, spark)
-      migrateEdges(classic, core, spark)
-
+      migrate(MigrationConfig(from,to), spark)
     } catch {
-      case e: Exception => {
+      case e: Exception =>
         e.printStackTrace()
-        usage()
-      }
+        System.err.println("Failed to migrate the graph. Please review the logs.")
     } finally {
+      System.out.println("Closing Spark session")
       spark.stop()
     }
   }
-  def usage(): Unit = {
-    println("\nUsage: data_migration classicGraphName coreGraphName")
-  }
-
 }
